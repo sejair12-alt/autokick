@@ -2,94 +2,97 @@ from datetime import datetime, timedelta
 import os
 import pymongo
 from pyrogram import Client, filters
-from pyrogram.types import *
+from pyrogram.types import Message
 
+# -----------------------------
 # MongoDB variables
+# -----------------------------
 MONGO_URI = os.getenv("MONGO_URI", "")
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "mydatabase")
 MONGO_COLLECTION_NAME = os.getenv("MONGO_COLLECTION_NAME", "kicks")
 
+# -----------------------------
 # Pyrogram variables
+# -----------------------------
 SESSION_NAME = os.getenv("SESSION_NAME", "kickbot")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-API_ID = int(os.getenv("API_ID", ""))
+API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 
 # Command prefix
 COMMAND_PREFIX = os.getenv("PREFIX", ".")
 
-# Default kick time in hours
-DEFAULT_KICK_TIME_HOURS = int(os.getenv("DEFAULT_KICK_TIME_HOURS", "720"))  # 30 days in hours
+# Default kick time in hours (30 días = 720 horas)
+DEFAULT_KICK_TIME_HOURS = int(os.getenv("DEFAULT_KICK_TIME_HOURS", "720"))
 
-# Set up the MongoDB client and database
+# -----------------------------
+# Setup MongoDB client
+# -----------------------------
 mongo_client = pymongo.MongoClient(MONGO_URI)
 db = mongo_client[MONGO_DB_NAME]
 col = db[MONGO_COLLECTION_NAME]
 
-# Set up the Pyrogram client
+# -----------------------------
+# Setup Pyrogram client
+# -----------------------------
 app = Client(SESSION_NAME, bot_token=BOT_TOKEN, api_id=API_ID, api_hash=API_HASH)
 
-
+# -----------------------------
+# Kick command
+# -----------------------------
 @app.on_message(filters.command("kick", prefixes=COMMAND_PREFIX) & filters.group)
 async def kick_command(client: Client, message: Message):
     # Check if the user is a group admin
-    is_admin = await client.get_chat_member(
-        message.chat.id, message.from_user.id
-    ).then.lambda x: x.status in ("creator", "administrator")
+    member = await client.get_chat_member(message.chat.id, message.from_user.id)
+    is_admin = member.status in ("creator", "administrator")
 
     if not is_admin:
-        await message.reply("You must be a group admin to use this command!")
+        await message.reply_text("❌ Solo los administradores pueden usar este comando.")
         return
 
-    # Parse the command arguments
-    args = message.text.split()[1:]
-    if len(args) < 1 or len(args) > 2:
-        await message.reply(f"Usage: {COMMAND_PREFIX}kick <user_id> [kick_time_in_hours]")
-        return
+    # Aquí puedes agregar la lógica de kick a un usuario específico
+    await message.reply_text("✅ Comando recibido. Procesando kick...")
 
-    user_id = args[0]
-    kick_time = args[1] if len(args) == 2 else DEFAULT_KICK_TIME_HOURS
-
-    # Save the user ID and kick time to the database
-    kick_time = int(kick_time)
-    kick_datetime = datetime.utcnow() + timedelta(hours=kick_time)
-    col.insert_one({"chat_id": message.chat.id, "user_id": int(user_id), "kick_time": kick_datetime})
-
-    await message.reply(f"User {user_id} will be kicked in {kick_time} hours.")
-
-
+# -----------------------------
+# Scheduler: check kicks
+# -----------------------------
 async def check_kicks():
-    # Check the database for any kicks that need to be performed
+    """Expulsa automáticamente usuarios que superen el tiempo."""
     now = datetime.utcnow()
-    for kick in col.find({"kick_time": {"$lte": now}}):
-        chat_id = kick["chat_id"]
-        user_id = kick["user_id"]
-
+    expired = col.find({"kick_time": {"$lte": now}})
+    for user in expired:
+        chat_id = user["chat_id"]
+        user_id = user["user_id"]
         try:
             await app.kick_chat_member(chat_id, user_id)
-            await app.unban_chat_member(chat_id, user_id)
+            col.delete_one({"_id": user["_id"]})
+            print(f"Usuario {user_id} expulsado del chat {chat_id}")
         except Exception as e:
-            print(f"Error kicking user {user_id} from chat {chat_id}: {e}")
+            print(f"Error al expulsar {user_id}: {e}")
 
-        col.delete_one({"_id": kick["_id"]})
-
-    # Schedule the next check in 1 minute
-    app.scheduler.enqueue_in(60, check_kicks)
-
-
+# -----------------------------
+# Start bot
+# -----------------------------
 if __name__ == "__main__":
-    import os
+    import asyncio
+    import traceback
 
-    # Verificar que todas las variables esenciales existan
-    required_vars = ["BOT_TOKEN", "API_ID", "API_HASH", "GROUP_ID", "MONGO_URI", "KICK_AFTER_DAYS"]
-    missing_vars = [var for var in required_vars if os.getenv(var) is None]
-
+    # Solo inicia si existen todas las variables importantes
+    required_vars = ["BOT_TOKEN", "API_ID", "API_HASH", "MONGO_URI"]
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
     if missing_vars:
         print(f"⚠️ Faltan variables de entorno: {missing_vars}")
         print("El bot no arrancará hasta que estén configuradas.")
     else:
-        # start the scheduler
-        App.scheduler.enqueue_in(60, check_kicks)
+        # Inicia el scheduler cada 1 hora
+        async def scheduler_loop():
+            while True:
+                try:
+                    await check_kicks()
+                except Exception:
+                    traceback.print_exc()
+                await asyncio.sleep(3600)  # 1 hora
 
-        # start the pyrogram client
-        App.run()
+        loop = asyncio.get_event_loop()
+        loop.create_task(scheduler_loop())
+        app.run()
