@@ -78,8 +78,18 @@ async def check_kicks():
 
 
 if __name__ == "__main__":
-    # Start the scheduler
-    app.scheduler.enqueue_in(60, check_kicks)
+    import os
 
-    # Start the Pyrogram client
-    app.run()
+    # Verificar que todas las variables esenciales existan
+    required_vars = ["BOT_TOKEN", "API_ID", "API_HASH", "GROUP_ID", "MONGO_URI", "KICK_AFTER_DAYS"]
+    missing_vars = [var for var in required_vars if os.getenv(var) is None]
+
+    if missing_vars:
+        print(f"⚠️ Faltan variables de entorno: {missing_vars}")
+        print("El bot no arrancará hasta que estén configuradas.")
+    else:
+        # start the scheduler
+        App.scheduler.enqueue_in(60, check_kicks)
+
+        # start the pyrogram client
+        App.run()
